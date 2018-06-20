@@ -3,13 +3,18 @@ package p2p
 import (
 	"errors"
 	"sync"
+
+	ma "gx/ipfs/QmUxSEGbv2nmYNnfXi7839wwQqTN3kwQeUxe8dTjZWZs7J/go-multiaddr"
+	"gx/ipfs/QmZNkThpqfVXs9GNbexPrfBbXSLNYeKrE7jwFM2oqHbyqN/go-libp2p-protocol"
 )
 
 // Listener listens for connections and proxies them to a target
 type Listener interface {
-	Protocol() string
-	ListenAddress() string
-	TargetAddress() string
+	Protocol() protocol.ID
+	ListenAddress() ma.Multiaddr
+	TargetAddress() ma.Multiaddr
+
+	start() error
 
 	// Close closes the listener. Does not affect child streams
 	Close() error
@@ -27,25 +32,28 @@ type ListenerRegistry struct {
 	lk        sync.Mutex
 }
 
-func (r *ListenerRegistry) lock(l Listener) error {
+// Register registers listenerInfo into this registry and starts it
+func (r *ListenerRegistry) Register(l Listener) error {
 	r.lk.Lock()
 
 	if _, ok := r.Listeners[getListenerKey(l)]; ok {
 		r.lk.Unlock()
 		return errors.New("listener already registered")
 	}
-	return nil
-}
-
-func (r *ListenerRegistry) unlock() {
-	r.lk.Unlock()
-}
-
-// Register registers listenerInfo in this registry
-func (r *ListenerRegistry) Register(l Listener) {
-	defer r.lk.Unlock()
 
 	r.Listeners[getListenerKey(l)] = l
+
+	r.lk.Unlock()
+
+	if err := l.start(); err != nil {
+		r.lk.Lock()
+		defer r.lk.Lock()
+
+		delete(r.Listeners, getListenerKey(l))
+		return err
+	}
+
+	return nil
 }
 
 // Deregister removes p2p listener from this registry
@@ -58,8 +66,8 @@ func (r *ListenerRegistry) Deregister(k listenerKey) {
 
 func getListenerKey(l Listener) listenerKey {
 	return listenerKey{
-		proto:  l.Protocol(),
-		listen: l.ListenAddress(),
-		target: l.TargetAddress(),
+		proto:  string(l.Protocol()),
+		listen: l.ListenAddress().String(),
+		target: l.TargetAddress().String(),
 	}
 }
